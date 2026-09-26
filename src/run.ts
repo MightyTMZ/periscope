@@ -5,6 +5,9 @@
 //     --competitor ornn --url https://ornn.com --pages /regulatory,/product \
 //     --jobs surface,benchmark,reveal --countries CA,US,DE --cap 12
 //
+//   --jobs map --max-pages 40 maps the whole site first (sitemap + link crawl, PageRank order) and opens the best pages
+//   in parallel browsers; PERISCOPE_MAX_CONCURRENT (10 on Launch, 100 on Scale), PERISCOPE_MAP_BROWSERS and PERISCOPE_MAP_PAGES_PER_BROWSER (default 5) shape it.
+//
 //   add --profile <profileId> --account trial1 --start https://app.example.com to enqueue a walker.
 //
 // A handoff prints the viewer URL; a human resolves it in the live view and then:
@@ -33,7 +36,8 @@ const spec = {
   competitor: arg("competitor"),
   url: arg("url"),
   pages: arg("pages", "/").split(",").map((s) => s.trim()).filter(Boolean),
-  jobs: arg("jobs", "surface,benchmark,reveal").split(",").map((s) => s.trim()) as JobType[],
+  jobs: arg("jobs", "surface,benchmark,reveal").split(",").map((s) => s.trim()) as Array<JobType | "map">,
+  maxPages: Number(arg("max-pages", "50")),
   countries: arg("countries", "CA,US,DE").split(",").map((s) => s.trim()).filter(Boolean),
   capUsd: Number(arg("cap", "12")),
   profileId: process.argv.includes("--profile") ? arg("profile") : undefined,

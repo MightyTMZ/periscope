@@ -54,7 +54,8 @@ export interface CoordinatorConfig {
   cancelHandoff?: (jobId: string) => Promise<void>;
 }
 
-const MAX_CONCURRENT = 10;
+/** Matches the Steel plan: 10 on Launch, 100 on Scale. Same knob as the session pool. */
+const MAX_CONCURRENT = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
 
 /**
  * Job queue over Person C's session pool.

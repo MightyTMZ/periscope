@@ -7,13 +7,15 @@ import type { SteelSegment } from "../steel/segment.js";
 import { StorageSink } from "./storage-sink.js";
 import type { LiveSessions } from "./live-sessions.js";
 import { archiveSession, evidenceSink } from "./evidence.js";
+import { chunkForBrowsers, discoverSite, type SiteMap } from "../map.js";
 
 export interface RunSpec {
   runId: string;
   competitor: string;
   url: string;
   pages?: string[];          // paths or full urls, resolved against url; default ["/"]
-  jobs?: JobType[];          // default surface, benchmark, reveal
+  jobs?: Array<JobType | "map">; // default surface, benchmark, reveal; "map" discovers the whole site first and replaces the page jobs
+  maxPages?: number;         // whole-site runs: how many discovered pages get a browser (default 50)
   countries?: string[];      // default CA, US, DE (borders and the walker's home country)
   capUsd?: number;           // default 12
   start?: string;            // walker start url
@@ -37,6 +39,8 @@ export interface LaunchHandle {
   coordinator: Coordinator;
   done: Promise<{ completedJobs: Job[]; failedJobs: Job[] }>;
   cancel: () => Promise<void>;
+  /** Whole-site runs: the discovered map, once discovery has finished. */
+  map?: SiteMap;
 }
 
 /** Routes segment-level events (handoffs) to the run that owns the job. */
@@ -65,8 +69,11 @@ export function buildJobs(spec: RunSpec): Omit<Job, "id" | "state">[] {
   const countries = spec.countries ?? ["CA", "US", "DE"];
   const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
   const jobs: Omit<Job, "id" | "state">[] = [];
-  for (const t of spec.jobs ?? ["surface", "benchmark", "reveal"]) {
-    if (t === "surface" || t === "benchmark" || t === "reveal") jobs.push({ type: t, competitor: spec.competitor, urls: pages, vantage: desktop });
+  const wanted = spec.jobs ?? ["surface", "benchmark", "reveal"];
+  const map = wanted.includes("map");
+  for (const t of wanted) {
+    // whole-site runs get their page jobs from discovery (see launchRun), so the plain page jobs are skipped here
+    if (!map && (t === "surface" || t === "benchmark" || t === "reveal")) jobs.push({ type: t, competitor: spec.competitor, urls: pages, vantage: desktop });
     if (t === "borders") jobs.push({ type: "borders", competitor: spec.competitor, urls: [pages[0]], vantages: countries.flatMap((c) => [{ country: c, device: "desktop", authenticated: false }, { country: c, device: "mobile", authenticated: false }] as Vantage[]) });
     if (t === "walker") {
       if (!spec.start) throw new Error("start url is required for a walker job");
@@ -107,23 +114,46 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
     waitForResolution: deps.segment.waitForResolution,
     cancelHandoff: async (jobId) => { await deps.segment.handoff?.cancel(jobId); deps.segment.notifier?.stop(jobId); },
   });
+  const register = () => {
+    for (const j of coordinator.getState().queued) {
+      if (jobHints.has(j.id)) continue;
+      jobHints.set(j.id, { purpose: j.type === "walker" ? "walker" : j.type === "borders" ? "borders" : j.type === "reveal" ? "reveal" : "surface", competitor: spec.competitor, url: j.urls[0] });
+      deps.router.register(j.id, tee);
+    }
+  };
   coordinator.enqueue(jobs);
-  for (const j of coordinator.getState().queued) {
-    jobHints.set(j.id, { purpose: j.type === "walker" ? "walker" : j.type === "borders" ? "borders" : j.type === "reveal" ? "reveal" : "surface", competitor: spec.competitor, url: j.urls[0] });
-    deps.router.register(j.id, tee);
-  }
+  register();
 
-  const done = (async () => {
-    const result = await coordinator.run();
-    await tee.write({ type: "run_done", data: { runId: spec.runId } });
-    return result;
-  })();
-
-  return {
-    runId: spec.runId, coordinator, done,
+  const handle: LaunchHandle = {
+    runId: spec.runId, coordinator, done: Promise.resolve({ completedJobs: [], failedJobs: [] }),
     cancel: async () => {
       deps.storage.setRunStatus(spec.runId, "cancelled", "cancelled through the API");
       await coordinator.cancelAll();
     },
   };
+
+  const done = (async () => {
+    if ((spec.jobs ?? []).includes("map")) {
+      // Whole site: find every page over plain fetch, rank them, then spread the best ones across parallel browsers.
+      const pages = resolvePages(spec.url, spec.pages);
+      const site = await discoverSite({ root: spec.url, start: pages[0], maxPages: spec.maxPages ?? 50, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
+      handle.map = site;
+      const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
+      const cap = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
+      const browsers = Math.max(1, Math.min(cap, Number(process.env.PERISCOPE_MAP_BROWSERS ?? cap)));
+      const chunks = chunkForBrowsers(site.pages, browsers, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 5));
+      console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers`);
+      coordinator.enqueue([
+        { type: "benchmark", competitor: spec.competitor, urls: site.pages, vantage: desktop },
+        ...chunks.map((urls) => ({ type: "reveal" as const, competitor: spec.competitor, urls, vantage: desktop })),
+      ]);
+      register();
+    }
+    const result = await coordinator.run();
+    await tee.write({ type: "run_done", data: { runId: spec.runId } });
+    return result;
+  })();
+
+  handle.done = done;
+  return handle;
 }

@@ -62,6 +62,8 @@ export function createSteelSegment(opts: SteelSegmentOptions): SteelSegment {
     },
   });
   const pool = new SessionPool(adapter, {
+    // PERISCOPE_MAX_CONCURRENT matches the Steel plan: 10 on Launch, 100 on Scale
+    maxConcurrent: Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10)),
     homeCountryOf: async (profileId) => loadProfiles().find((p) => p.profileId === profileId)?.homeCountry ?? null,
     // C6: a locally recorded profile must be READY on Steel before reuse; unknown ids are asked live
     isProfileReady: async (profileId) => {

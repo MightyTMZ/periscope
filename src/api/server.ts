@@ -145,6 +145,7 @@ export function createApi(opts: ApiOptions): Promise<Api> {
     const spec: RunSpec = {
       runId: String(b.runId ?? `run-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`), competitor: String(b.competitor), url: String(b.url),
       pages: b.pages as string[] | undefined, jobs: b.jobs as RunSpec["jobs"], countries: b.countries as string[] | undefined,
+      maxPages: b.maxPages === undefined ? undefined : Math.max(1, Math.min(200, Number(b.maxPages))),
       capUsd: b.capUsd === undefined ? undefined : Number(b.capUsd), start: b.start as string | undefined, profileId: b.profileId as string | undefined,
       accountRef: b.accountRef as string | undefined, category: b.category as string | undefined, goal: b.goal as string | undefined,
     };
@@ -204,6 +205,12 @@ export function createApi(opts: ApiOptions): Promise<Api> {
 
   /* ---------------- live sessions ---------------- */
   const sessionsView = (runId?: string) => (opts.liveSessions?.(runId) ?? []).map((s) => ({ ...s, pendingWall: [...pending.values()].find((h) => h.viewerUrl === s.viewerUrl)?.wall ?? null }));
+  // Whole-site runs: the discovered map (pages found, ranked pages opened, documents), empty until discovery finishes.
+  route("GET", "/runs/:id/map", (c) => {
+    if (!runOr404(c)) return;
+    const site = runs.get(c.params.id)?.map;
+    json(c.res, 200, { ok: true, runId: c.params.id, ready: Boolean(site), nodes: site?.nodes ?? 0, edges: site?.edges ?? 0, fetched: site?.fetched ?? 0, sitemap: site?.sitemap ?? false, pages: site?.pages ?? [], documents: site?.documents ?? [] });
+  });
   route("GET", "/sessions", (c) => json(c.res, 200, { ok: true, sessions: sessionsView(), steel: Boolean(opts.liveSessions) }));
   route("GET", "/runs/:id/sessions", (c) => { if (runOr404(c)) json(c.res, 200, { ok: true, runId: c.params.id, sessions: sessionsView(c.params.id) }); });
 
