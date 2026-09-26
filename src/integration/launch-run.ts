@@ -140,7 +140,8 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
       handle.map = site;
       const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
       const cap = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
-      const browsers = Math.max(1, Math.min(cap, Number(process.env.PERISCOPE_MAP_BROWSERS ?? cap)));
+      // the reveal of each page also calls Steel's scrape endpoint (a short-lived session of its own), so leave two slots free by default
+      const browsers = Math.max(1, Math.min(cap, Number(process.env.PERISCOPE_MAP_BROWSERS ?? Math.max(1, cap - 2))));
       const chunks = chunkForBrowsers(site.pages, browsers, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 5));
       console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers`);
       coordinator.enqueue([
