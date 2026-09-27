@@ -109,3 +109,11 @@ describe("map: robots", () => {
     expect(robotsMatcher(["/"])("https://x.example/pricing")).toBe(true);
   });
 });
+
+describe("map: host forms", () => {
+  it("treats www and bare host as one page", () => {
+    expect(normalizeUrl("https://acme.example/about", "https://www.acme.example/")).toBe("https://www.acme.example/about");
+    expect(normalizeUrl("https://www.acme.example/about", "https://acme.example/")).toBe("https://acme.example/about");
+    expect(normalizeUrl("https://other.example/about", "https://acme.example/")).toBe("https://other.example/about");
+  });
+});

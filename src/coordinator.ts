@@ -325,7 +325,17 @@ export class Coordinator {
       let page = handle.page;
 
       try {
-        for (const url of job.urls) {
+        for (let i = 0; i < job.urls.length; i++) {
+          const url = job.urls[i];
+          // A session stops autonomous work at its deadline. If the next page would not fit, hand the remaining pages to a
+          // fresh browser instead of losing them when this one is closed under us.
+          const msLeft = new Date(handle.deadlineAt).getTime() - Date.now();
+          if (i > 0 && msLeft < 4 * 60_000) {
+            const rest = job.urls.slice(i);
+            this.enqueue([{ type: "reveal", competitor: job.competitor, urls: rest, vantage: job.vantage, onLinks: job.onLinks }]);
+            job.urls = job.urls.slice(0, i);
+            break;
+          }
           await page.goto(url, { waitUntil: "load", timeout: 60_000 });
           await page.waitForTimeout(1000);
 

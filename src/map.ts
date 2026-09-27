@@ -78,6 +78,11 @@ export function normalizeUrl(href: string, base: string): string | null {
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   u.hash = "";
   u.hostname = u.hostname.toLowerCase();
+  // www.example.com and example.com are one site: keep whichever form the base uses so a page is one node, not two
+  try {
+    const bh = new URL(base).hostname.toLowerCase();
+    if (u.hostname !== bh && u.hostname.replace(/^www\./, "") === bh.replace(/^www\./, "")) u.hostname = bh;
+  } catch { /* base is not a url: leave the host alone */ }
   for (const k of [...u.searchParams.keys()]) if (SKIP_QUERY.test(k)) u.searchParams.delete(k);
   let s = u.toString();
   if (u.pathname !== "/" && s.endsWith("/")) s = s.slice(0, -1);

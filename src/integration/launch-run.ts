@@ -164,7 +164,7 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
         const fresh: string[] = [];
         for (const raw of links) {
           if (known.size >= maxPages) break;
-          const n = normalizeUrl(raw, pageUrl);
+          const n = normalizeUrl(raw, spec.url); // links are absolute; the base only pins the host form the map uses
           if (!n || !sameSite(n, spec.url) || known.has(n)) continue;
           if (isDocumentLink(n)) { if (!site.documents.includes(n)) site.documents.push(n); continue; }
           if (keywordScore(n) <= -5) continue; // login, cart, legal, tag pages: never worth a browser
