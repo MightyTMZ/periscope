@@ -56,6 +56,21 @@ function siteRoot(u: string): string {
   } catch { return u; }
 }
 
+/**
+ * Same site, subdomains included: a login on example.com usually lands on app.example.com, and the dashboard lives
+ * there. File fixtures keep the directory rule.
+ */
+function onSite(href: string, root: string): boolean {
+  if (root.startsWith("file:")) return href.startsWith(root);
+  try {
+    const h = new URL(href), r = new URL(root);
+    if (h.protocol !== "http:" && h.protocol !== "https:") return false;
+    const base = r.hostname.replace(/^www\./, "");
+    const host = h.hostname.replace(/^www\./, "");
+    return host === base || host.endsWith(`.${base}`);
+  } catch { return false; }
+}
+
 async function wallOn(page: Page, cfg: DeterministicWalkerConfig, generation: number): Promise<WallDetected | undefined> {
   const verdict = await classifyFromDom(page);
   if (!verdict.wall) return undefined;
@@ -73,7 +88,7 @@ async function linksOn(page: Page, root: string): Promise<Array<{ href: string; 
   const out: Array<{ href: string; label: string }> = [];
   const seen = new Set<string>();
   for (const l of found) {
-    if (!l.href.startsWith(root) || NOT_A_PAGE.test(l.href)) continue;
+    if (!onSite(l.href, root) || NOT_A_PAGE.test(l.href)) continue;
     const c = canonical(l.href);
     if (seen.has(c)) continue;
     seen.add(c);
@@ -184,7 +199,7 @@ export async function walkDeterministic(cfg: DeterministicWalkerConfig): Promise
     } catch {
       continue;
     }
-    if (!canonical(page.url()).startsWith(root)) continue; // redirected off-site
+    if (!onSite(canonical(page.url()), root)) continue; // redirected off-site
 
     let wall = await wallOn(page, cfg, generation);
     if (wall && wall.wall === "login" && cfg.autoLogin) {

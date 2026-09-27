@@ -154,13 +154,20 @@ async function labelOf(l: Locator): Promise<string> {
 
 /* ---------------- strategies ---------------- */
 
+/**
+ * Cookie banners are declined before the baseline is taken (see revealDeterministic), so the page's ordinary content,
+ * which the banner may have covered, is never credited to the "Reject" button (seen on openhack.com: 150 "revealed"
+ * lines that were just the page). Run again here only for banners that appear late.
+ */
 async function consentWalls(ctx: Ctx): Promise<void> {
   const page = ctx.cfg.page;
   const decline = page.locator("button, a, [role=button]").filter({ hasText: /reject|decline|necessary only|essential only|only necessary|deny|ablehnen|nur notwendige|nur erforderliche|refuser|rechazar|rifiuta|weigeren/i }).first();
   if (await decline.count()) {
     const label = await labelOf(decline);
-    await guardedClick(ctx, decline, label);
-    await capture(ctx, "consent", { action: "click", label });
+    if (await guardedClick(ctx, decline, label)) {
+      // lines that appear now were behind the banner, not behind a feature: remember them, do not record them
+      for (const line of await visibleLines(page)) ctx.seen.add(line);
+    }
   }
 }
 
@@ -580,6 +587,17 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
   if (page.url() !== cfg.url) await page.goto(cfg.url, { waitUntil: "load", timeout: 60_000 });
   else await page.reload({ waitUntil: "load", timeout: 60_000 }).catch(() => undefined); // the listener must see the page's own API calls
   await page.waitForTimeout(1200);
+
+  // Decline the cookie banner first, so the baseline is the page itself and not the page hidden behind a banner.
+  {
+    const decline = page.locator("button, a, [role=button]").filter({ hasText: /reject|decline|necessary only|essential only|only necessary|deny|ablehnen|nur notwendige|nur erforderliche|refuser|rechazar|rifiuta|weigeren/i }).first();
+    if (await decline.count().catch(() => 0)) {
+      const before = page.url();
+      await decline.click({ timeout: 3000 }).catch(() => undefined);
+      await page.waitForTimeout(600);
+      if (page.url() !== before) await page.goto(before, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+    }
+  }
 
   // Wait for the page to settle. Blog and app pages keep rendering for seconds after "load"; a baseline taken too early
   // makes ordinary late content look like it was revealed by the first click (seen on deepmark.me: 300 "toggle" lines

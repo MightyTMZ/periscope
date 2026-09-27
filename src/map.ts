@@ -18,6 +18,8 @@ export interface SiteMap {
   sitemap: boolean;
   fetched: number;
   documents: string[];
+  /** Sign-in links seen on the site, including ones on app./auth./login. subdomains that the page crawl does not enter. */
+  loginCandidates: string[];
 }
 
 export interface DiscoverOptions {
@@ -87,6 +89,15 @@ export function normalizeUrl(href: string, base: string): string | null {
   let s = u.toString();
   if (u.pathname !== "/" && s.endsWith("/")) s = s.slice(0, -1);
   return s;
+}
+
+const LOGIN_LINK = /\/(log-?in|sign-?in|signin|auth|account\/login|users\/sign_in|session\/new)(\/|$|\?|#)|^https?:\/\/(app|login|auth|account|accounts|dashboard|portal|my|console)\./i;
+/** Same registrable name, any subdomain: app.example.com belongs to example.com. */
+export function sameDomain(a: string, b: string): boolean {
+  try {
+    const ha = new URL(a).hostname.replace(/^www\./, ""), hb = new URL(b).hostname.replace(/^www\./, "");
+    return ha === hb || ha.endsWith(`.${hb}`) || hb.endsWith(`.${ha}`);
+  } catch { return false; }
 }
 
 export function sameSite(a: string, b: string): boolean {
@@ -200,6 +211,7 @@ export async function discoverSite(opts: DiscoverOptions): Promise<SiteMap> {
   const depth = new Map<string, number>([[start, 0]]);
   const edges: Array<[string, string]> = [];
   const documents = new Set<string>();
+  const logins = new Set<string>();
   let sitemapUsed = false;
   const sitemapUrls = robots.sitemaps.length ? robots.sitemaps : [`${origin}/sitemap.xml`, `${origin}/sitemap_index.xml`];
   const seenMaps = new Set<string>();
@@ -234,6 +246,7 @@ export async function discoverSite(opts: DiscoverOptions): Promise<SiteMap> {
       const d = depth.get(u) ?? 0;
       for (const link of extractLinks(html, u)) {
         if (DOCUMENT.test(link)) { documents.add(link); continue; }
+        if (LOGIN_LINK.test(link) && sameDomain(link, origin)) logins.add(link);
         if (!sameSite(link, origin)) continue;
         if (AVOID[3][0].test(link)) continue;
         if (!nodes.has(link)) { nodes.add(link); depth.set(link, d + 1); if (d + 1 <= 3) queue.push(link); }
@@ -246,7 +259,7 @@ export async function discoverSite(opts: DiscoverOptions): Promise<SiteMap> {
 
   const ranked = rankPages(start, [...nodes].filter((u) => !disallowed(u) || u === start), edges, depth);
   const pages = ranked.slice(0, Math.max(1, maxPages)).map(([u]) => u);
-  return { pages, scores: new Map(ranked), nodes: nodes.size, edges: edges.length, sitemap: sitemapUsed, fetched, documents: [...documents] };
+  return { pages, scores: new Map(ranked), nodes: nodes.size, edges: edges.length, sitemap: sitemapUsed, fetched, documents: [...documents], loginCandidates: [...logins] };
 }
 
 /** Split the ranked pages across browsers: best pages spread across sessions so the first results land early. */

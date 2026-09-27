@@ -16,6 +16,12 @@ export interface RunSpec {
   pages?: string[];          // paths or full urls, resolved against url; default ["/"]
   jobs?: Array<JobType | "map">; // default surface, benchmark, reveal; "map" discovers the whole site first and replaces the page jobs
   maxPages?: number;         // whole-site runs: how many discovered pages get a browser (default 400: the whole site)
+  /**
+   * Whole-site runs: what to do when the site has a sign-in page. "ask": open it in a browser and hand off to a
+   * person, who signs in inside the live view (Periscope never sees the password); the walk then reads the
+   * signed-in space. "skip" (default): public pages only.
+   */
+  login?: "ask" | "skip";
   countries?: string[];      // default CA, US, DE (borders and the walker's home country)
   capUsd?: number;           // default 12
   start?: string;            // walker start url
@@ -165,7 +171,9 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
         for (const raw of links) {
           if (known.size >= maxPages) break;
           const n = normalizeUrl(raw, spec.url); // links are absolute; the base only pins the host form the map uses
-          if (!n || !sameSite(n, spec.url) || known.has(n)) continue;
+          if (!n) continue;
+          if (/\/(log-?in|sign-?in|signin|auth)(\/|$|\?|#)|^https?:\/\/(app|login|auth|account|accounts|dashboard|portal|my|console)\./i.test(n) && !site.loginCandidates.includes(n)) site.loginCandidates.push(n);
+          if (!sameSite(n, spec.url) || known.has(n)) continue;
           if (isDocumentLink(n)) { if (!site.documents.includes(n)) site.documents.push(n); continue; }
           if (keywordScore(n) <= -5) continue; // login, cart, legal, tag pages: never worth a browser
           known.add(n);
@@ -186,6 +194,18 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
       const timer = setInterval(() => flush(true), 8000);
       stopGrowth = () => clearInterval(timer);
 
+      // The sign-in door: when asked, open it in its own browser and hand off to a person. The walker detects the login
+      // wall, the console shows the wall card, the person signs in inside the live view, presses resume, and the walk
+      // reads every screen behind the door. Without an account of their own there is nothing to do here.
+      if (spec.login === "ask") {
+        const door = await findLoginUrl(spec.url, [...site.loginCandidates, ...site.scores.keys()]);
+        if (door) {
+          console.log(`[map ${spec.runId}] sign-in page ${door}: a person will be asked to log in`);
+          coordinator.enqueue([{ type: "walker", competitor: spec.competitor, urls: [door], vantage: { country: null, device: "desktop", authenticated: true }, revealEverything: true }]);
+          register();
+        } else console.log(`[map ${spec.runId}] no sign-in page found on this site`);
+      }
+
       const chunks = chunkForBrowsers(site.pages, browsers, perBrowser);
       console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers${site.pages.length <= 2 ? "; the map will grow from what the browser renders" : ""}`);
       coordinator.enqueue([{ type: "benchmark", competitor: spec.competitor, urls: site.pages, vantage: desktop }]);
@@ -200,4 +220,24 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
 
   handle.done = done;
   return handle;
+}
+
+const LOGIN_PATH = /\/(log-?in|sign-?in|signin|auth|account\/login|users\/sign_in|session\/new)(\/|$|\?|#)/i;
+
+/** The site's sign-in page: from the map when it links to one, else the usual paths, probed over plain fetch. */
+export async function findLoginUrl(root: string, known: string[], fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
+  const fromMap = known.filter((u) => LOGIN_PATH.test(u)).sort((a, b) => a.length - b.length)[0];
+  if (fromMap) return fromMap;
+  const origin = new URL(root).origin;
+  for (const path of ["/login", "/signin", "/sign-in", "/account/login", "/users/sign_in", "/auth/login"]) {
+    const url = origin + path;
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetchImpl(url, { redirect: "follow", signal: ctl.signal, headers: { accept: "text/html" } });
+      clearTimeout(t);
+      // a real sign-in page answers 200 and stays on a sign-in path (a soft 404 or a redirect home does not)
+      if (r.ok && LOGIN_PATH.test(new URL(r.url || url).pathname + "/")) return url;
+    } catch { /* not there */ }
+  }
+  return undefined;
 }

@@ -117,3 +117,14 @@ describe("map: host forms", () => {
     expect(normalizeUrl("https://other.example/about", "https://acme.example/")).toBe("https://other.example/about");
   });
 });
+
+describe("login door", () => {
+  it("finds the sign-in page from the map first, then by probing the usual paths", async () => {
+    const { findLoginUrl } = await import("../../src/integration/launch-run.js");
+    expect(await findLoginUrl("https://acme.example", ["https://acme.example/pricing", "https://acme.example/users/sign_in"])).toBe("https://acme.example/users/sign_in");
+    const probe: typeof fetch = async (input) => { const u = new URL(String(input)); return u.pathname === "/login" ? new Response("<form>", { status: 200 }) : new Response("no", { status: 404 }); };
+    expect(await findLoginUrl("https://acme.example", ["https://acme.example/pricing"], probe)).toBe("https://acme.example/login");
+    const none: typeof fetch = async () => new Response("no", { status: 404 });
+    expect(await findLoginUrl("https://acme.example", [], none)).toBeUndefined();
+  });
+});

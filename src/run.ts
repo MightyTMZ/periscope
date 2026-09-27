@@ -38,6 +38,7 @@ const spec = {
   pages: arg("pages", "/").split(",").map((s) => s.trim()).filter(Boolean),
   jobs: arg("jobs", "surface,benchmark,reveal").split(",").map((s) => s.trim()) as Array<JobType | "map">,
   maxPages: Number(arg("max-pages", "400")),
+  login: (arg("login", "skip") === "ask" ? "ask" : undefined) as "ask" | undefined,
   countries: arg("countries", "CA,US,DE").split(",").map((s) => s.trim()).filter(Boolean),
   capUsd: Number(arg("cap", "12")),
   profileId: process.argv.includes("--profile") ? arg("profile") : undefined,
