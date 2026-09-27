@@ -36,7 +36,7 @@ const api = await createApi({
   liveSessions: segment ? (runId) => live.view(segment.pool.activeSessions(), runId) : undefined,
   segment: segment ? { resume: segment.resume, acquireSession: segment.acquireSession, profileStatus: (id) => segment.adapter.profileStatus(id) } : undefined,
   launch: segment ? (spec) => launchRun(spec, {
-    storage, segment, router, live,
+    storage, segment, router, live, complete,
     onEvent: (e) => { if (e.type === "job_state") console.log(`[${spec.runId}] job ${e.data.jobId.slice(0, 8)} ${e.data.state}${e.data.reason ? " (" + e.data.reason + ")" : ""}`); if (e.type === "counter") console.log(`[${spec.runId}] ${e.data.url} missed by fetch: ${e.data.missed}`); },
     onHandoff: (h) => { api.recordHandoff(h); console.log(`[${spec.runId}] handoff ${h.state} ${h.wall} job ${h.jobId.slice(0, 8)} -> ${h.viewerUrl}`); },
   }) : undefined,

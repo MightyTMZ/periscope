@@ -11,6 +11,7 @@ Section 8.3 of the architecture. Start it with `npm run api` (port 4747, `PERISC
 | `POST /runs` | launch a run; `Idempotency-Key` header replays the same run id for the same body, 409 for a different body | `{competitor, url, pages?, jobs?, countries?, capUsd?, start?, profileId?, accountRef?, runId?, category?, goal?}` |
 | `GET /runs?limit=50` | newest runs first with spend, observation count, competitors, whether still live | |
 | `GET /runs/:id/observations` | observations of a run, filtered; `q` matches every word against text, url and revealing label | `q?`, `competitor?`, `layer?`, `missedByFetch?`, `limit?` |
+| `POST /runs/:id/brief`, `GET /runs/:id/brief` | the Claude-written brief for a run (needs ANTHROPIC_API_KEY): structured sections, every claim with observation ids, cached under data/briefs; `{"rebuild":true}` to regenerate | |
 | `GET /runs/:id/map` | whole-site runs (`jobs: ["map"]`, optional `maxPages`): pages found, ranked pages opened, documents seen; `ready` is false until discovery finishes | |
 | `GET /runs/:id` | run record with `spentUsd` and `capUsd` in dollars, jobs with states and reasons, counts, counters | |
 | `POST /runs/:id/cancel` | cancel queued and active jobs; active sessions receive an abort and are released | |

@@ -8,6 +8,9 @@ import { StorageSink } from "./storage-sink.js";
 import type { LiveSessions } from "./live-sessions.js";
 import { archiveSession, evidenceSink } from "./evidence.js";
 import { chunkForBrowsers, discoverSite, isDocumentLink, keywordScore, normalizeUrl, sameSite, type SiteMap } from "../map.js";
+import type { Complete } from "../intel/extract.js";
+import { planSite } from "../intel/navigator.js";
+import { meteredCompletion } from "../intel/metered-completion.js";
 
 export interface RunSpec {
   runId: string;
@@ -38,6 +41,8 @@ export interface LaunchDeps {
   live?: LiveSessions;
   onEvent?: (e: Event) => void;
   onHandoff?: (h: HandoffEvent) => void;
+  /** Model behind the navigator: when present, Claude labels and orders the site map before browsers open. */
+  complete?: Complete;
 }
 
 export interface LaunchHandle {
@@ -148,6 +153,17 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
       const maxPages = spec.maxPages ?? 400;
       const site = await discoverSite({ root: spec.url, start: pages[0], maxPages, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
       handle.map = site;
+      // The navigator: Claude labels every page and sets the order. Rules already ranked them; the model catches what
+      // rules cannot read from a path. Every page still opens; only the order changes.
+      if (deps.complete && site.pages.length > 1) {
+        try {
+          const plan = await planSite({ competitor: spec.competitor, urls: site.pages, complete: meteredCompletion(deps.storage, spec.runId, deps.complete) });
+          site.pages = plan.order;
+          site.types = Object.fromEntries(plan.types);
+          site.read = plan.read;
+          console.log(`[map ${spec.runId}] navigator: ${plan.read || "planned"} (${plan.types.size} pages labelled)`);
+        } catch (err) { console.warn(`[map ${spec.runId}] navigator skipped: ${(err as Error).message.slice(0, 120)}`); }
+      }
       const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
       const cap = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
       // the reveal of each page also calls Steel's scrape endpoint (a short-lived session of its own), so leave two slots free by default

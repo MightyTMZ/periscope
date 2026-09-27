@@ -20,6 +20,9 @@ export interface SiteMap {
   documents: string[];
   /** Sign-in links seen on the site, including ones on app./auth./login. subdomains that the page crawl does not enter. */
   loginCandidates: string[];
+  /** Filled by the navigator when a model is on: page type per url, and one line on what the site sells. */
+  types?: Record<string, string>;
+  read?: string;
 }
 
 export interface DiscoverOptions {

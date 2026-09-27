@@ -11,7 +11,7 @@ export function meteredCompletion(storage: Storage, runId: string, complete: Com
     const perform = async () => {
       const run = storage.getRun(runId);
       if (!run || run.status === "cancelled") throw new Error("Run unavailable or cancelled");
-      const inputBound = Buffer.byteLength(args.system + args.user + JSON.stringify(args.schema), "utf8") + 2048;
+      const inputBound = Buffer.byteLength(args.system + args.user + JSON.stringify(args.schema), "utf8") + 2048 + (args.images?.length ?? 0) * 6000; // ~1.5k tokens per screenshot
       const reserved = Meter.tokensToUsd(inputBound, args.maxTokens);
       const spent = storage.runSpendMicroUsd(runId) / 1e6;
       const cap = run.capMicroUsd / 1e6;

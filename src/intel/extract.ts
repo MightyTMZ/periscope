@@ -17,17 +17,25 @@ export interface ExtractedRow {
 
 export interface Completion { rows?: ExtractedRow[]; bullets?: string[]; tokensIn: number; tokensOut: number }
 /** One model call, forced onto a tool with `schema`; returns the tool input and token usage. */
-export type Complete = (args: { system: string; user: string; toolName: string; schema: Record<string, unknown>; maxTokens: number }) => Promise<{ input: unknown; tokensIn: number; tokensOut: number }>;
+export interface CompleteImage { mediaType: "image/png" | "image/jpeg"; data: string }
+export type Complete = (args: { system: string; user: string; toolName: string; schema: Record<string, unknown>; maxTokens: number; images?: CompleteImage[]; model?: string }) => Promise<{ input: unknown; tokensIn: number; tokensOut: number }>;
 
-export const DEFAULT_MODEL = process.env.PERISCOPE_MODEL ?? "claude-opus-5";
+/** Bulk model (extraction, navigation). PERISCOPE_MODEL overrides; the brief uses PERISCOPE_BRIEF_MODEL (see below). */
+export const DEFAULT_MODEL = process.env.PERISCOPE_MODEL ?? "claude-sonnet-5";
+/** The brief is one call per run and is what people read: the strongest model by default. */
+export const BRIEF_MODEL = process.env.PERISCOPE_BRIEF_MODEL ?? process.env.PERISCOPE_MODEL ?? "claude-opus-5-5";
 
-/** Real model behind the same interface. Needs ANTHROPIC_API_KEY. */
+/** Real model behind the same interface. Needs ANTHROPIC_API_KEY. Screenshots go in as image blocks before the text. */
 export function anthropicComplete(model = DEFAULT_MODEL): Complete {
   const client = new Anthropic();
-  return async ({ system, user, toolName, schema, maxTokens }) => {
+  return async ({ system, user, toolName, schema, maxTokens, images, model: override }) => {
+    const content: Anthropic.MessageParam["content"] = [
+      ...(images ?? []).map((im) => ({ type: "image" as const, source: { type: "base64" as const, media_type: im.mediaType, data: im.data } })),
+      { type: "text" as const, text: user },
+    ];
     const res = await client.messages.create({
-      model, max_tokens: maxTokens, system,
-      messages: [{ role: "user", content: user }],
+      model: override ?? model, max_tokens: maxTokens, system,
+      messages: [{ role: "user", content }],
       tools: [{ name: toolName, description: "Record the structured result.", input_schema: schema as Anthropic.Tool["input_schema"] }],
       tool_choice: { type: "tool", name: toolName },
     });
