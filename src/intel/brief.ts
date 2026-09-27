@@ -83,14 +83,26 @@ export function toImageBlocks(paths: string[]): Array<{ mediaType: "image/png" |
   return paths.map((p) => ({ mediaType: p.toLowerCase().endsWith(".jpg") || p.toLowerCase().endsWith(".jpeg") ? "image/jpeg" as const : "image/png" as const, data: readFileSync(p).toString("base64") }));
 }
 
+/** Runs launched together share a stamp (helix-parse-1234, helix-borders-1234, helix-login-1234): the brief reads all of them. */
+export function siblingRunIds(storage: Storage, runId: string): string[] {
+  const m = runId.match(/^([a-z0-9]+)-(parse|borders|login)-(\d+)$/i);
+  if (!m) return [runId];
+  const [, family, , stamp] = m;
+  return storage.listRuns(500).map((r) => r.id).filter((id) => id === runId || new RegExp(`^${family}-(parse|borders|login)-${stamp}$`, "i").test(id));
+}
+
+const HASH = /\s*\[[0-9a-f]{16,}\]/g;
+const clean = (t: string) => t.replace(HASH, "").replace(/\s+([.,;])/g, "$1").trim();
+
 export async function buildBrief(opts: { storage: Storage; runId: string; complete: Complete; model?: string; cap?: number; screenshots?: number }): Promise<Brief> {
   const { storage, runId } = opts;
-  const all = storage.getObservationsByRun(runId);
+  const runIds = siblingRunIds(storage, runId);
+  const all = runIds.flatMap((id) => storage.getObservationsByRun(id));
   const picked = selectForBrief(all, opts.cap);
   const byId = new Map(all.map((o) => [o.id, o]));
   const competitor = [...new Set(all.map((o) => o.competitor))].join(", ") || storage.getRun(runId)?.goal || runId;
 
-  const cov = coverage(runId, all);
+  const cov = coverage(runId, all); // observations from every sibling run, so the countries and the login walk land in one brief
   const pagesLine = cov.pages.map((p) => `${p.url} · fetch saw ${p.surface} · revealed ${p.hidden} · missed by fetch ${p.missedByFetch}${p.documents ? ` · documents ${p.documents}` : ""}`).join("\n");
   const bordersObs = all.filter((o) => o.layer === "borders");
   const grids = [...new Set(bordersObs.map((o) => o.url))].map((u) => bordersGrid(u, bordersObs));
@@ -127,8 +139,8 @@ export async function buildBrief(opts: { storage: Storage; runId: string; comple
   const docsKnown = new Set(all.filter((o) => o.kind === "document").map((o) => o.text));
 
   return {
-    headline: typeof raw.headline === "string" ? raw.headline.slice(0, 200) : `What ${competitor} shows, and what it hides`,
-    summary: strings(raw.summary, 8),
+    headline: typeof raw.headline === "string" ? clean(raw.headline).slice(0, 200) : `What ${competitor} shows, and what it hides`,
+    summary: strings(raw.summary, 8).map(clean),
     pricing: keep(raw.pricing),
     hidden_findings: keep(raw.hidden_findings),
     country_differences: keep(raw.country_differences),
@@ -136,7 +148,7 @@ export async function buildBrief(opts: { storage: Storage; runId: string; comple
     signed_in_findings: keep(raw.signed_in_findings),
     documents: (Array.isArray(raw.documents) ? raw.documents : []).filter((d) => d && typeof d.url === "string" && docsKnown.has(d.url)).map((d) => ({ title: String(d.title ?? d.url).slice(0, 120), url: d.url })),
     what_a_fetch_tool_misses: keep(raw.what_a_fetch_tool_misses),
-    gaps: strings(raw.gaps, 10),
+    gaps: strings(raw.gaps, 10).map(clean),
     confidence: raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low" ? raw.confidence : "medium",
     model: opts.model ?? "",
     generatedAt: new Date().toISOString(),

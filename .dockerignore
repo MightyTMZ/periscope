@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+web
+frontend
+data
+.env
+.env.*
+.git
+.vercel
+dist
+.claude
+docs/images
+benchmarks

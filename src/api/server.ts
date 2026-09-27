@@ -371,7 +371,8 @@ export function createApi(opts: ApiOptions): Promise<Api> {
 
   return new Promise((resolve, reject) => {
     server.on("error", reject);
-    server.listen(opts.port ?? Number(process.env.PERISCOPE_API_PORT ?? 4747), () => {
+    // hosted platforms (Railway, Render, Fly) hand the port over as PORT
+    server.listen(opts.port ?? Number(process.env.PERISCOPE_API_PORT ?? process.env.PORT ?? 4747), () => {
       const addr = server.address();
       const port = typeof addr === "object" && addr ? addr.port : Number(opts.port);
       resolve({
