@@ -52,6 +52,8 @@ export interface LaunchHandle {
   cancel: () => Promise<void>;
   /** Whole-site runs: the discovered map, once discovery has finished. */
   map?: SiteMap;
+  /** Add jobs to a run in flight (the API uses this to restart a login with an injected credential). */
+  enqueue?: (jobs: Omit<Job, "id" | "state">[]) => void;
 }
 
 /** Routes segment-level events (handoffs) to the run that owns the job. */
@@ -137,6 +139,7 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
 
   const handle: LaunchHandle = {
     runId: spec.runId, coordinator, done: Promise.resolve({ completedJobs: [], failedJobs: [] }),
+    enqueue: (extra) => { coordinator.enqueue(extra); register(); },
     cancel: async () => {
       deps.storage.setRunStatus(spec.runId, "cancelled", "cancelled through the API");
       await coordinator.cancelAll();

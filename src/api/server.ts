@@ -15,6 +15,7 @@ import { buildBrief, type Brief } from "../intel/brief.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { loadProfiles, profileFor, saveProfile, waitUntilReady } from "../steel/profiles.js";
+import { credentialNamespace } from "../steel/credentials.js";
 import type { LaunchHandle, RunSpec } from "../integration/launch-run.js";
 import type { LiveSessionView } from "../integration/live-sessions.js";
 import { comparisonMatrix } from "../intel/matrix.js";
@@ -29,6 +30,10 @@ export interface ApiSegment {
   resume: (jobId: string, generation: number) => Promise<{ ok: boolean; reason?: string }>;
   acquireSession?: (req: LeaseRequest) => Promise<SessionHandle>;
   profileStatus?: (profileId: string) => Promise<string>;
+  /** Store a login in Steel's vault (the password goes straight to Steel; never logged, never persisted here). */
+  storeCredential?: (input: { namespace: string; origin: string; username: string; password: string; label?: string }) => Promise<void>;
+  /** Give up on a paused handoff (the job ends as partial); used when a fresh job takes its place. */
+  abandon?: (jobId: string, reason: string) => Promise<void>;
 }
 
 export interface ApiOptions {
@@ -222,6 +227,34 @@ export function createApi(opts: ApiOptions): Promise<Api> {
 
   /* ---------------- human in the loop ---------------- */
   route("GET", "/handoffs", (c) => json(c.res, 200, { ok: true, handoffs: [...pending.values()] }));
+  // The login form: a person types their own login for the site into the console; Periscope stores it in Steel's vault,
+  // bound to the sign-in page's exact origin, and restarts the walk in a fresh browser where Steel injects it into the
+  // form. The password is read from this request body, handed to Steel, and dropped: not logged, not stored in
+  // SQLite, never shown to the model. The console sends it over HTTPS only.
+  route("POST", "/handoffs/:id/login", async (c) => {
+    if (!opts.segment?.storeCredential || !opts.segment.abandon) return json(c.res, 503, { ok: false, reason: "steel not configured" });
+    const h = pending.get(c.params.id);
+    if (!h || h.wall !== "login") return json(c.res, 404, { ok: false, reason: "no login wall is waiting for this job" });
+    const b = await readBody(c.req).catch(() => ({} as Record<string, unknown>));
+    const username = String(b.username ?? "").trim(); const password = String(b.password ?? "");
+    if (!username || !password) return json(c.res, 400, { ok: false, reason: "username and password are required" });
+    const jobRow = storage.getJob(c.params.id);
+    const handle = jobRow ? runs.get(jobRow.runId) : undefined;
+    const job = handle?.coordinator.getState().running.find((j) => j.id === c.params.id) ?? handle?.coordinator.getState().queued.find((j) => j.id === c.params.id);
+    if (!jobRow || !handle || !job || !handle.enqueue) return json(c.res, 409, { ok: false, reason: "that run is no longer in flight" });
+    // the sign-in page the browser is sitting on decides the origin the credential is allowed on
+    const live = sessionsView(jobRow.runId).find((s) => s.viewerUrl === h.viewerUrl);
+    const origin = new URL(live?.currentUrl || job.urls[0]).origin;
+    const accountRef = `human-${Date.now().toString(36)}`;
+    const namespace = credentialNamespace(job.competitor, accountRef);
+    try { await opts.segment.storeCredential({ namespace, origin, username, password, label: `${job.competitor}/${accountRef}` }); }
+    catch (err) { return json(c.res, 502, { ok: false, reason: `Steel refused the credential: ${(err as Error).message.slice(0, 120)}` }); }
+    saveProfile({ profileId: `pending:${namespace}`, competitor: job.competitor, accountRef, homeCountry: null, signedInIndicator: "", createdAt: new Date().toISOString(), ready: false, credentialNamespace: namespace, loginOrigin: origin });
+    await opts.segment.abandon(c.params.id, "login details provided; restarting with Steel credential injection");
+    pending.delete(c.params.id);
+    handle.enqueue([{ type: "walker", competitor: job.competitor, urls: [live?.currentUrl || job.urls[0]], vantage: { country: null, device: "desktop", authenticated: true }, accountRef, revealEverything: true }]);
+    json(c.res, 200, { ok: true, runId: jobRow.runId, origin, accountRef, note: "A fresh browser is opening the sign-in page; Steel injects the login; the walk continues behind it." });
+  });
   route("POST", "/jobs/:id/takeover", (c) => {
     const h = pending.get(c.params.id);
     if (!h) return json(c.res, 404, { ok: false, reason: "no pending handoff for that job" });

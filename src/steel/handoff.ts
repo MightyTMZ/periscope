@@ -112,7 +112,7 @@ export class HandoffController {
   }
   pendingWall(jobId: string): WallKind | undefined { return this.pending.get(jobId)?.wall.wall; }
 
-  private async abandon(jobId: string, reason: string): Promise<void> {
+  async abandon(jobId: string, reason: string): Promise<void> {
     const p = this.pending.get(jobId);
     if (!p) return;
     clearTimeout(p.timer);
