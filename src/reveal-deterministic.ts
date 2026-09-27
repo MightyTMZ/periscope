@@ -45,6 +45,7 @@ export interface DeterministicRevealConfig {
   handle: SessionHandle;
   sink: EventSink;
   maxActionsPerStrategy?: number;   // default 12
+  maxMsPerPage?: number;            // default 180 s: a page never eats the whole session
   blocklistPath?: string;           // default fixtures/blocklist.json
   /** Subset of strategies to run, in this order. Default: all. Borders uses a light set. */
   strategies?: StrategyName[];
@@ -52,7 +53,7 @@ export interface DeterministicRevealConfig {
   emitBaselineAs?: "borders" | "hidden";
 }
 
-export type StrategyName = "consent" | "tabs" | "selects" | "toggles" | "showMore" | "hover" | "modals" | "iframes" | "documents" | "hiddenApi";
+export type StrategyName = "consent" | "menus" | "tabs" | "selects" | "toggles" | "showMore" | "hover" | "modals" | "iframes" | "documents" | "hiddenApi" | "sweep";
 export const LIGHT_STRATEGIES: StrategyName[] = ["consent", "toggles", "selects", "documents", "hiddenApi"];
 
 export interface DeterministicRevealResult {
@@ -72,6 +73,7 @@ interface Ctx {
   blocked: RegExp;
   strategies: Record<string, number>;
   apiUrls: Set<string>;
+  deadline: number;
 }
 
 function loadBlocklist(path: string): RegExp {
@@ -117,7 +119,7 @@ async function capture(ctx: Ctx, strategy: string, revealedBy: Observation["reve
 
 /** Click with the URL guard. Returns false if the click navigated (recorded as a link and restored). */
 async function guardedClick(ctx: Ctx, target: Locator, label: string): Promise<boolean> {
-  if (ctx.actions >= ctx.max * 12) return false;
+  if (ctx.actions >= ctx.max * 12 || Date.now() > ctx.deadline) return false;
   if (ctx.blocked.test(label) || /dev ?tools|next\.js/i.test(label)) return false; // never the framework's dev overlay
   const page = ctx.cfg.page;
   const before = page.url();
@@ -296,7 +298,7 @@ async function toggles(ctx: Ctx): Promise<void> {
 async function showMore(ctx: Ctx): Promise<void> {
   const page = ctx.cfg.page;
   for (let round = 0; round < ctx.max; round++) {
-    const btn = page.locator("button, a, [role=button]").filter({ hasText: /^(show|load|see|view) (more|all)|more\b/i }).first();
+    const btn = page.locator("button, a, [role=button]").filter({ hasText: /^(show|load|see|view|read|expand) (more|all|details)|^expand all$|^read more$|more\b/i }).first();
     if (!(await btn.count())) break;
     const label = await labelOf(btn);
     if (!(await guardedClick(ctx, btn, label))) break;
@@ -438,6 +440,130 @@ async function hiddenApi(ctx: Ctx): Promise<void> {
   }
 }
 
+/**
+ * The final pass: click every remaining clickable element that no earlier strategy handled, so nothing that hides
+ * content behind an interaction is left untouched. This is the "reach everything a fetch tool cannot" pass.
+ *
+ * One page.evaluate marks every candidate (visible, clickable-looking, not already handled, not navigation, not in the
+ * blocklist) with a data attribute, so each click is one remote round trip rather than one per element. After each
+ * click we capture new visible lines; a click that navigates is undone by guardedClick and does not count as hidden
+ * content. Purchase, delete and account controls are never clicked (the blocklist and the label guard below).
+ */
+/**
+ * Site menus: the header and nav controls that unfold mega menus, product lists and feature groups. Earlier strategies
+ * skip navigation on purpose (a menu link is a page for the crawl, not hidden content); this pass opens the menus that
+ * only exist on hover or click and records what they show. Links inside menus are never followed here.
+ */
+async function menus(ctx: Ctx): Promise<void> {
+  const page = ctx.cfg.page;
+  const cands: Array<{ idx: number; label: string; expander: boolean }> = await page.evaluate((max) => {
+    const out: Array<{ idx: number; label: string; expander: boolean }> = [];
+    const roots = Array.from(document.querySelectorAll("nav, header, [role=navigation], [role=menubar]"));
+    const seen = new Set<string>();
+    let idx = 0;
+    for (const root of roots) {
+      const items = Array.from(root.querySelectorAll("button, [role=button], [role=menuitem], [aria-haspopup], [aria-expanded], li > a, li > span, li > div, summary"));
+      for (const e of items) {
+        if (out.length >= max) break;
+        const el = e as HTMLElement;
+        const href = (el as HTMLAnchorElement).href || "";
+        if (el.tagName === "A" && href && !/^javascript:|#$/.test(href) && !el.hasAttribute("aria-haspopup") && !el.hasAttribute("aria-expanded")) {
+          // a plain link with no submenu is a page for the crawl; a link that also owns a submenu is worth hovering
+          const li = el.closest("li");
+          if (!li || !li.querySelector("ul, [role=menu], [class*=submenu], [class*=dropdown], [class*=mega]")) continue;
+        }
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) continue;
+        const label = ((el.innerText || el.getAttribute("aria-label") || "").trim()).replace(/\s+/g, " ").slice(0, 60);
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        el.setAttribute("data-periscope-menu", String(idx));
+        out.push({ idx, label, expander: el.getAttribute("aria-expanded") === "false" || el.hasAttribute("aria-haspopup") });
+        idx++;
+      }
+    }
+    return out;
+  }, ctx.max * 2).catch(() => [] as Array<{ idx: number; label: string; expander: boolean }>);
+
+  for (const cand of cands) {
+    if (Date.now() > ctx.deadline) break;
+    if (ctx.blocked.test(cand.label)) continue;
+    const el = page.locator(`[data-periscope-menu="${cand.idx}"]`).first();
+    if (!(await el.count())) continue;
+    // hover opens most mega menus; capture what appeared
+    try { await el.hover({ timeout: 2000 }); ctx.actions++; } catch { continue; }
+    await page.waitForTimeout(350);
+    let n = await capture(ctx, "menus", { action: "hover", label: cand.label });
+    // still closed? click it (the URL guard undoes a navigation)
+    if (n === 0 && cand.expander && (await guardedClick(ctx, el, cand.label))) {
+      n = await capture(ctx, "menus", { action: "click", label: cand.label });
+      await page.keyboard.press("Escape").catch(() => undefined);
+    }
+    await page.mouse.move(0, 0).catch(() => undefined);
+  }
+}
+
+async function sweep(ctx: Ctx): Promise<void> {
+  const page = ctx.cfg.page;
+  const budget = Math.max(ctx.max * 3, 40); // this pass is allowed more clicks than a single strategy
+  const cands: Array<{ idx: number; label: string }> = await page.evaluate((max) => {
+    const out: Array<{ idx: number; label: string }> = [];
+    const seen = new Set<string>();
+    // anything a user could click that might unfold content; links stay in the crawl, so only same-page controls here
+    const sel = "button, [role=button], [role=tab], [role=menuitem], [aria-expanded], [aria-haspopup], [aria-controls], summary, [data-toggle], [data-accordion], [data-collapse], [data-state], [onclick], [tabindex]:not([tabindex='-1']), "
+      + "[class*=accordion], [class*=collaps], [class*=expand], [class*=toggle], [class*=dropdown], [class*=disclosure], [class*=faq], [class*=tab-], [class*=Tab]";
+    const els = Array.from(document.querySelectorAll(sel)) as Element[];
+    // custom controls: headings and boxes styled as clickable (cursor: pointer) that carry no button semantics at all
+    for (const e of Array.from(document.querySelectorAll("h2, h3, h4, h5, div, span, li, p, dt, section"))) {
+      if (els.length > max * 6) break;
+      const el = e as HTMLElement;
+      if (el.closest("a, button, [role=button], nav, header, footer, form")) continue;
+      if (getComputedStyle(el).cursor !== "pointer") continue;
+      const text = (el.innerText || "").trim();
+      if (!text || text.length > 140) continue; // a whole clickable card is too big to be a control
+      els.push(el);
+    }
+    let idx = 0;
+    for (const e of els) {
+      if (out.length >= max) break;
+      const el = e as HTMLElement;
+      if (el.hasAttribute("data-periscope-done")) continue;
+      // skip navigation, forms, headers, footers, and anything that is really a link
+      if (el.closest("nav, header, footer, form, [role=navigation], [role=menubar]")) continue;
+      if (el.tagName === "A" && (el as HTMLAnchorElement).href) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      const label = ((el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").trim()).replace(/\s+/g, " ").slice(0, 60);
+      const key = label || `el-${idx}`;
+      if (label && seen.has(label)) continue;
+      seen.add(key);
+      el.setAttribute("data-periscope-sweep", String(idx));
+      out.push({ idx, label });
+      idx++;
+    }
+    return out;
+  }, budget).catch(() => [] as Array<{ idx: number; label: string }>);
+
+  for (const cand of cands) {
+    if (ctx.actions >= budget) break;
+    if (!cand.label || NAV_LABEL.test(cand.label) || ctx.blocked.test(cand.label)) continue;
+    const el = page.locator(`[data-periscope-sweep="${cand.idx}"]`).first();
+    if (!(await el.count())) continue;
+    const inState = await el.getAttribute("aria-expanded").catch(() => null);
+    if (await guardedClick(ctx, el, cand.label || "element")) {
+      await capture(ctx, "sweep", { action: "click", label: cand.label || "element" });
+      // collapse it again if it was an expander, so later clicks and the screenshot see a tidy page
+      if (inState === "false") await guardedClick(ctx, el, cand.label || "element").catch(() => false);
+      else await page.keyboard.press("Escape").catch(() => undefined);
+    }
+    await el.evaluate((e) => e.setAttribute("data-periscope-done", "1")).catch(() => undefined);
+  }
+}
+
 /* ---------------- orchestration ---------------- */
 
 export async function revealDeterministic(cfg: DeterministicRevealConfig): Promise<DeterministicRevealResult> {
@@ -458,7 +584,7 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
   const ctx: Ctx = {
     cfg, baseline, seen: new Set(baselineLines), observations: [], actions: 0,
     max: cfg.maxActionsPerStrategy ?? 12, blocked: loadBlocklist(cfg.blocklistPath ?? "fixtures/blocklist.json"),
-    strategies: {}, apiUrls,
+    strategies: {}, apiUrls, deadline: Date.now() + (cfg.maxMsPerPage ?? 180_000),
   };
 
   if (cfg.emitBaselineAs) {
@@ -476,11 +602,12 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
   }
 
   const all: Record<StrategyName, (c: Ctx) => Promise<void>> = {
-    consent: consentWalls, tabs: tabsAndAccordions, selects, toggles, showMore, hover, modals, iframes, documents: (c) => documents(c), hiddenApi,
+    consent: consentWalls, menus, tabs: tabsAndAccordions, selects, toggles, showMore, hover, modals, iframes, documents: (c) => documents(c), hiddenApi, sweep,
   };
-  const order: StrategyName[] = cfg.strategies ?? ["consent", "tabs", "selects", "toggles", "showMore", "hover", "modals", "iframes", "documents", "hiddenApi"];
+  const order: StrategyName[] = cfg.strategies ?? ["consent", "tabs", "selects", "toggles", "showMore", "hover", "modals", "iframes", "documents", "hiddenApi", "menus", "sweep"];
   const strategies: Array<[string, (c: Ctx) => Promise<void>]> = order.map((n) => [n, all[n]]);
   for (const [name, fn] of strategies) {
+    if (Date.now() > ctx.deadline && name !== "documents" && name !== "hiddenApi") continue; // out of time: only the free passes remain
     try { await fn(ctx); } catch (err) { console.error(`deterministic reveal ${name} failed:`, (err as Error).message.slice(0, 120)); }
   }
   page.off("response", onResponse);

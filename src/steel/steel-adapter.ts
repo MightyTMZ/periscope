@@ -65,7 +65,9 @@ export class SteelAdapter {
     const extensionIds = this.opts.extensionIdsFor ? await this.opts.extensionIdsFor(req) : [];
     if (extensionIds.length) createOpts.extensionIds = extensionIds;
 
-    const session = await this.steel.sessions.create(createOpts as never);
+    // The plan's concurrent-session limit answers 429. A job that meets it waits for a slot instead of failing, so a
+    // whole-site run of 60 jobs flows through 10 browsers in waves rather than losing pages.
+    const session = await createSessionWithRetry(() => this.steel.sessions.create(createOpts as never));
     const query = new URLSearchParams({ apiKey: this.opts.apiKey, sessionId: session.id });
     const cdpUrl = `wss://connect.steel.dev?${query.toString()}`; // never log this: it carries the API key
     const browser = await chromium.connectOverCDP(cdpUrl);
@@ -211,4 +213,20 @@ export class SteelAdapter {
 
 export function defaultVantage(overrides: Partial<Vantage> = {}): Vantage {
   return { country: null, device: "desktop", authenticated: false, ...overrides };
+}
+
+async function createSessionWithRetry<T>(create: () => Promise<T>): Promise<T> {
+  let delay = 5_000;
+  const started = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await create();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const limit = /429|concurrent session limit|too many/i.test(msg);
+      if (!limit || Date.now() - started > 4 * 60_000) throw err;
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(Math.round(delay * 1.5), 30_000);
+    }
+  }
 }

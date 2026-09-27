@@ -23,8 +23,8 @@ export interface SiteMap {
 export interface DiscoverOptions {
   root: string;              // site origin or any url on it
   start?: string;            // first page; defaults to root
-  maxPages?: number;         // pages to hand to browsers (default 30)
-  maxFetch?: number;         // html pages to fetch during discovery (default 120)
+  maxPages?: number;         // pages to hand to browsers (default 400)
+  maxFetch?: number;         // html pages to fetch during discovery (default 400)
   concurrency?: number;      // parallel fetches (default 6)
   timeoutMs?: number;        // per fetch (default 10s)
   fetchImpl?: typeof fetch;  // tests inject one
@@ -168,7 +168,7 @@ export function rankPages(start: string, nodes: string[], edges: Array<[string, 
 export async function discoverSite(opts: DiscoverOptions): Promise<SiteMap> {
   const f = opts.fetchImpl ?? fetch;
   const log = opts.log ?? (() => {});
-  const maxPages = opts.maxPages ?? 30, maxFetch = opts.maxFetch ?? 120, concurrency = opts.concurrency ?? 6, timeoutMs = opts.timeoutMs ?? 10_000;
+  const maxPages = opts.maxPages ?? 400, maxFetch = opts.maxFetch ?? 400, concurrency = opts.concurrency ?? 6, timeoutMs = opts.timeoutMs ?? 10_000;
   const origin = new URL(opts.root).origin;
   const start = normalizeUrl(opts.start ?? opts.root, origin) ?? origin;
 

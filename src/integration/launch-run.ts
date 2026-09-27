@@ -15,7 +15,7 @@ export interface RunSpec {
   url: string;
   pages?: string[];          // paths or full urls, resolved against url; default ["/"]
   jobs?: Array<JobType | "map">; // default surface, benchmark, reveal; "map" discovers the whole site first and replaces the page jobs
-  maxPages?: number;         // whole-site runs: how many discovered pages get a browser (default 50)
+  maxPages?: number;         // whole-site runs: how many discovered pages get a browser (default 400: the whole site)
   countries?: string[];      // default CA, US, DE (borders and the walker's home country)
   capUsd?: number;           // default 12
   start?: string;            // walker start url
@@ -136,13 +136,16 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
     if ((spec.jobs ?? []).includes("map")) {
       // Whole site: find every page over plain fetch, rank them, then spread the best ones across parallel browsers.
       const pages = resolvePages(spec.url, spec.pages);
-      const site = await discoverSite({ root: spec.url, start: pages[0], maxPages: spec.maxPages ?? 50, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
+      const site = await discoverSite({ root: spec.url, start: pages[0], maxPages: spec.maxPages ?? 400, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
       handle.map = site;
       const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
       const cap = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
-      // the reveal of each page also calls Steel's scrape endpoint (a short-lived session of its own), so leave two slots free by default
-      const browsers = Math.max(1, Math.min(cap, Number(process.env.PERISCOPE_MAP_BROWSERS ?? Math.max(1, cap - 2))));
-      const chunks = chunkForBrowsers(site.pages, browsers, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 5));
+      // Each reveal job holds one browser AND briefly opens a second session for its scrape baseline, so N reveal jobs
+      // can need up to 2N sessions at once. To never trip Steel's "concurrent session limit", cap the reveal browsers
+      // at half the plan (a whole-site run of 50 pages queues through them in waves). One env override if wanted.
+      const safe = Math.max(1, Math.floor(cap / 2));
+      const browsers = Math.max(1, Math.min(safe, Number(process.env.PERISCOPE_MAP_BROWSERS ?? safe)));
+      const chunks = chunkForBrowsers(site.pages, browsers, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 3));
       console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers`);
       coordinator.enqueue([
         { type: "benchmark", competitor: spec.competitor, urls: site.pages, vantage: desktop },
