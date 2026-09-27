@@ -23,9 +23,10 @@ export function loadProfiles(): ProfileRecord[] {
   const f = file();
   // Hosted brains start with an empty data volume. PERISCOPE_PROFILES_JSON carries the saved-login records (the same
   // content as data/profiles.local.json on the laptop) and is written to the data dir the first time it is needed.
-  if (!fs.existsSync(f) && process.env.PERISCOPE_PROFILES_JSON) {
+  const raw = process.env.PERISCOPE_PROFILES_JSON_B64 ? Buffer.from(process.env.PERISCOPE_PROFILES_JSON_B64, "base64").toString("utf8") : process.env.PERISCOPE_PROFILES_JSON;
+  if (!fs.existsSync(f) && raw) {
     try {
-      const seeded = JSON.parse(process.env.PERISCOPE_PROFILES_JSON) as ProfileRecord[];
+      const seeded = JSON.parse(raw.replace(/^\uFEFF/, "").trim()) as ProfileRecord[]; // a BOM from a Windows shell would otherwise break the parse
       if (Array.isArray(seeded)) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(seeded, null, 2)); }
     } catch { /* a bad seed is ignored; the file stays absent */ }
   }

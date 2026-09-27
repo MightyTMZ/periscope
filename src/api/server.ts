@@ -122,6 +122,8 @@ export function createApi(opts: ApiOptions): Promise<Api> {
     })();
   });
 
+  // Saved-login records the brain knows about (no secrets: the password lives in Steel's vault). For checking a hosted seed.
+  route("GET", "/profiles", (c) => json(c.res, 200, { ok: true, profiles: loadProfiles().map((p) => ({ competitor: p.competitor, accountRef: p.accountRef, profileId: p.profileId, ready: Boolean(p.ready), homeCountry: p.homeCountry ?? null })) }));
   route("GET", "/accounts/:id/status", async (c) => {
     // id is a setup id, a profile id, or competitor/accountRef
     const s = setups.get(c.params.id);
