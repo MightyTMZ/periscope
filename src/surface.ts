@@ -66,11 +66,19 @@ export async function scrapeSurface(params: {
  */
 async function scrapeWithRetry(steel: Steel, url: string): Promise<unknown> {
   let delay = 4000;
+  let target = url;
   for (let attempt = 1; ; attempt++) {
     try {
-      return await steel.scrape({ url, format: ["markdown", "html"] });
+      return await steel.scrape({ url: target, format: ["markdown", "html"] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // sites that link to www.example.com without a www DNS record (or the reverse): try the other host form once
+      if (/could not be resolved|ENOTFOUND/i.test(msg) && target === url) {
+        const u = new URL(url);
+        u.hostname = u.hostname.startsWith("www.") ? u.hostname.slice(4) : `www.${u.hostname}`;
+        target = u.toString();
+        continue;
+      }
       const limit = /429|concurrent session limit/i.test(msg);
       if (!limit || attempt >= 6) throw err;
       await new Promise((r) => setTimeout(r, delay));

@@ -581,7 +581,17 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
   else await page.reload({ waitUntil: "load", timeout: 60_000 }).catch(() => undefined); // the listener must see the page's own API calls
   await page.waitForTimeout(1200);
 
-  const baselineLines = await visibleLines(page);
+  // Wait for the page to settle. Blog and app pages keep rendering for seconds after "load"; a baseline taken too early
+  // makes ordinary late content look like it was revealed by the first click (seen on deepmark.me: 300 "toggle" lines
+  // that were just the article arriving). Poll until the visible text stops growing, up to six more seconds.
+  let baselineLines = await visibleLines(page);
+  for (let i = 0; i < 8; i++) {
+    await page.waitForTimeout(700);
+    const again = await visibleLines(page);
+    const settled = again.length === baselineLines.length;
+    baselineLines = again;
+    if (settled) break;
+  }
   const baseline = baselineLines.join("\n");
   const ctx: Ctx = {
     cfg, baseline, seen: new Set(baselineLines), observations: [], actions: 0,

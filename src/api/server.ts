@@ -322,7 +322,7 @@ export function createApi(opts: ApiOptions): Promise<Api> {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (req.method === "OPTIONS") { res.writeHead(204, { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,idempotency-key,last-event-id", "access-control-allow-private-network": "true" }); return res.end(); }
+    if (req.method === "OPTIONS") { res.writeHead(204, { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,idempotency-key,last-event-id" }); return res.end(); }
     for (const [method, re, names, h] of routes) {
       const m = url.pathname.match(re);
       if (!m || method !== req.method) continue;
