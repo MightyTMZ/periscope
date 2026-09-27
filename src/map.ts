@@ -56,6 +56,9 @@ const AVOID: Array<[RegExp, number]> = [
 const DOCUMENT = /\.(pdf|docx?|xlsx?|pptx?|csv|zip)(\?|$)|docs\.google\.com|drive\.google\.com|sheets\.google\.com|slides\.google\.com|dropbox\.com\/s|notion\.site|notion\.so|box\.com\/s|figma\.com\/(file|proto|design)|loom\.com\/share|youtube\.com\/watch|youtu\.be/i;
 const SKIP_QUERY = /^(utm_|ref$|fbclid|gclid|mc_cid|mc_eid|locale$|lang$|hl$|cft$)/i;
 
+/** A link to a file or a shared document rather than a page. */
+export function isDocumentLink(url: string): boolean { return DOCUMENT.test(url); }
+
 export function keywordScore(url: string): number {
   let s = 0;
   const path = safePath(url);

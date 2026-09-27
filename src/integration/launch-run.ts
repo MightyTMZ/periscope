@@ -7,7 +7,7 @@ import type { SteelSegment } from "../steel/segment.js";
 import { StorageSink } from "./storage-sink.js";
 import type { LiveSessions } from "./live-sessions.js";
 import { archiveSession, evidenceSink } from "./evidence.js";
-import { chunkForBrowsers, discoverSite, type SiteMap } from "../map.js";
+import { chunkForBrowsers, discoverSite, isDocumentLink, keywordScore, normalizeUrl, sameSite, type SiteMap } from "../map.js";
 
 export interface RunSpec {
   runId: string;
@@ -133,27 +133,67 @@ export function launchRun(spec: RunSpec, deps: LaunchDeps): LaunchHandle {
   };
 
   const done = (async () => {
+    let stopGrowth: (() => void) | undefined;
     if ((spec.jobs ?? []).includes("map")) {
-      // Whole site: find every page over plain fetch, rank them, then spread the best ones across parallel browsers.
+      // Whole site: find every page over plain fetch, rank them, then spread them across parallel browsers. Sites that
+      // render only in a browser (React apps with empty server HTML) show up as a near-empty fetch map; for those the
+      // map grows from the links each revealed page carries, until the page budget is met or nothing new appears.
       const pages = resolvePages(spec.url, spec.pages);
-      const site = await discoverSite({ root: spec.url, start: pages[0], maxPages: spec.maxPages ?? 400, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
+      const maxPages = spec.maxPages ?? 400;
+      const site = await discoverSite({ root: spec.url, start: pages[0], maxPages, log: (l) => console.log(`[map ${spec.runId}] ${l}`) });
       handle.map = site;
       const desktop: Vantage = { country: null, device: "desktop", authenticated: false };
       const cap = Math.max(1, Number(process.env.PERISCOPE_MAX_CONCURRENT ?? 10));
-      // Each reveal job holds one browser AND briefly opens a second session for its scrape baseline, so N reveal jobs
-      // can need up to 2N sessions at once. To never trip Steel's "concurrent session limit", cap the reveal browsers
-      // at half the plan (a whole-site run of 50 pages queues through them in waves). One env override if wanted.
-      const safe = Math.max(1, Math.floor(cap / 2));
-      const browsers = Math.max(1, Math.min(safe, Number(process.env.PERISCOPE_MAP_BROWSERS ?? safe)));
-      const chunks = chunkForBrowsers(site.pages, browsers, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 3));
-      console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers`);
-      coordinator.enqueue([
-        { type: "benchmark", competitor: spec.competitor, urls: site.pages, vantage: desktop },
-        ...chunks.map((urls) => ({ type: "reveal" as const, competitor: spec.competitor, urls, vantage: desktop })),
-      ]);
+      // the reveal of each page also calls Steel's scrape endpoint (a short-lived session of its own), so leave two slots free by default
+      const browsers = Math.max(1, Math.min(cap, Number(process.env.PERISCOPE_MAP_BROWSERS ?? Math.max(1, cap - 2))));
+      const perBrowser = Math.max(1, Number(process.env.PERISCOPE_MAP_PAGES_PER_BROWSER ?? 3));
+
+      const known = new Set<string>(site.pages);
+      const waiting: string[] = [];
+      const enqueuePages = (urls: string[]) => {
+        coordinator.enqueue([
+          { type: "reveal", competitor: spec.competitor, urls, vantage: desktop, onLinks },
+          { type: "benchmark", competitor: spec.competitor, urls, vantage: desktop },
+        ]);
+        register();
+      };
+      const flush = (force: boolean) => {
+        while (waiting.length >= perBrowser || (force && waiting.length)) enqueuePages(waiting.splice(0, perBrowser));
+      };
+      const onLinks = (pageUrl: string, links: string[]) => {
+        const fresh: string[] = [];
+        for (const raw of links) {
+          if (known.size >= maxPages) break;
+          const n = normalizeUrl(raw, pageUrl);
+          if (!n || !sameSite(n, spec.url) || known.has(n)) continue;
+          if (isDocumentLink(n)) { if (!site.documents.includes(n)) site.documents.push(n); continue; }
+          if (keywordScore(n) <= -5) continue; // login, cart, legal, tag pages: never worth a browser
+          known.add(n);
+          fresh.push(n);
+        }
+        if (!fresh.length) return;
+        fresh.sort((a, b) => keywordScore(b) - keywordScore(a));
+        site.pages.push(...fresh);
+        site.nodes += fresh.length;
+        waiting.push(...fresh);
+        console.log(`[map ${spec.runId}] +${fresh.length} pages from ${pageUrl} (${known.size} known)`);
+        flush(false);
+        // if this is the last browser still working, do not hold the remainder for a fuller batch
+        const st = coordinator.getState();
+        if (!st.queued.length && st.running.length <= 1) flush(true);
+      };
+      // pages that arrive in twos and threes still get a browser: flush the remainder every few seconds
+      const timer = setInterval(() => flush(true), 8000);
+      stopGrowth = () => clearInterval(timer);
+
+      const chunks = chunkForBrowsers(site.pages, browsers, perBrowser);
+      console.log(`[map ${spec.runId}] ${site.nodes} pages known (${site.sitemap ? "sitemap + " : ""}${site.fetched} fetched), opening ${site.pages.length} in ${chunks.length} browsers${site.pages.length <= 2 ? "; the map will grow from what the browser renders" : ""}`);
+      coordinator.enqueue([{ type: "benchmark", competitor: spec.competitor, urls: site.pages, vantage: desktop }]);
+      for (const urls of chunks) coordinator.enqueue([{ type: "reveal", competitor: spec.competitor, urls, vantage: desktop, onLinks }]);
       register();
     }
     const result = await coordinator.run();
+    stopGrowth?.();
     await tee.write({ type: "run_done", data: { runId: spec.runId } });
     return result;
   })();

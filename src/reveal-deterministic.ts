@@ -58,6 +58,8 @@ export const LIGHT_STRATEGIES: StrategyName[] = ["consent", "toggles", "selects"
 
 export interface DeterministicRevealResult {
   observations: Observation[];
+  /** Every link on the rendered page (absolute urls). Whole-site runs feed these back into the map. */
+  links: string[];
   missedByFetch: number;
   actions: number;
   strategies: Record<string, number>;   // observations produced per strategy
@@ -587,13 +589,19 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
     strategies: {}, apiUrls, deadline: Date.now() + (cfg.maxMsPerPage ?? 180_000),
   };
 
-  if (cfg.emitBaselineAs) {
+  // A page that renders in the browser but not in the fetch (React/Next apps with no server HTML) hides everything
+  // from a fetch tool, not just what sits behind clicks. When the browser sees far more on load than the fetch did,
+  // record the rendered lines too, so the coverage says "fetch saw 2, the browser saw 180" instead of hiding it.
+  const surfaceLineCount = cfg.surfaceBaseline.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length >= 3).length;
+  const renderedOnly = !cfg.emitBaselineAs && baselineLines.length > 3 * surfaceLineCount + 5;
+  const baselineLayer = cfg.emitBaselineAs ?? (renderedOnly ? "hidden" : undefined);
+  if (baselineLayer) {
     for (const line of baselineLines) {
       if (CODE_LIKE.test(line)) continue;
       let obs = createObservation({
         runId: cfg.runId, jobId: cfg.jobId, competitor: cfg.competitor, url: cfg.url,
-        layer: cfg.emitBaselineAs, source: "browser", kind: /\$|€|£|\d+(\.\d+)?\s*(\/|per)\s*(mo|month|yr|year|user|seat)/i.test(line) ? "price" : "text",
-        text: line, revealedBy: { action: "none" }, vantage: cfg.handle.vantage, perception: "dom", steelSessionId: cfg.handle.sessionId,
+        layer: baselineLayer, source: "browser", kind: /\$|€|£|\d+(\.\d+)?\s*(\/|per)\s*(mo|month|yr|year|user|seat)/i.test(line) ? "price" : "text",
+        text: line, revealedBy: renderedOnly ? { action: "none", label: "rendered by browser" } : { action: "none" }, vantage: cfg.handle.vantage, perception: "dom", steelSessionId: cfg.handle.sessionId,
       });
       obs = markMissedByFetch(obs, cfg.surfaceBaseline);
       ctx.observations.push(obs);
@@ -614,5 +622,7 @@ export async function revealDeterministic(cfg: DeterministicRevealConfig): Promi
 
   const missed = ctx.observations.filter((o) => o.missedByFetch).length;
   await cfg.sink.write({ type: "counter", data: { competitor: cfg.competitor, url: cfg.url, missed } });
-  return { observations: ctx.observations, missedByFetch: missed, actions: ctx.actions, strategies: ctx.strategies };
+  // the links the rendered page carries, after every menu and panel has been opened: the crawl's next frontier
+  const links: string[] = await page.evaluate(() => Array.from(document.querySelectorAll("a[href]")).map((a) => (a as HTMLAnchorElement).href).filter((h) => /^https?:/.test(h))).catch(() => [] as string[]);
+  return { observations: ctx.observations, missedByFetch: missed, actions: ctx.actions, strategies: ctx.strategies, links: [...new Set(links)] };
 }
