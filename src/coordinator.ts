@@ -38,6 +38,8 @@ export interface Job {
   onLinks?: (pageUrl: string, links: string[]) => void;
   /** Walker jobs: open every control on every screen, not just links, and allow more screens. */
   revealEverything?: boolean;
+  /** Walker jobs: a login the person typed into the console, in memory only; never persisted or logged. */
+  typedLogin?: { username: string; password: string };
 }
 
 export interface CoordinatorConfig {
@@ -441,6 +443,7 @@ export class Coordinator {
                 handle,
                 sink: this.config.sink,
                 autoLogin: Boolean(job.accountRef), // Steel injects the stored credentials for this account; the walker signs in by itself
+                typedLogin: job.typedLogin,
                 // signed-in spaces hide most of their facts behind tabs, expanders and menus: run the full reveal on every screen
                 revealOnScreens: job.revealEverything ? ["consent", "tabs", "selects", "toggles", "showMore", "hover", "modals", "documents", "menus", "sweep"] : undefined,
                 maxScreens: job.revealEverything ? 150 : undefined,

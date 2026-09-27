@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign in</title></head><body>
+<h1>Log in</h1>
+<form id="f" onsubmit="return go(event)">
+  <label>Email <input type="email" name="email" autocomplete="username"></label>
+  <div id="step2" style="display:none"><label>Password <input type="password" name="password"></label></div>
+  <button type="submit" id="btn">Continue</button>
+</form>
+<script>
+function go(e){ e.preventDefault(); const s2=document.getElementById('step2'); if (s2.style.display==='none'){ s2.style.display='block'; document.getElementById('btn').textContent='Log in'; return false; }
+  const pw=document.querySelector('input[type=password]').value; if (pw==='hunter2'){ document.body.innerHTML='<h1>Welcome back, dashboard</h1><a href="#">Billing</a>'; history.pushState({}, '', '#dashboard'); } else { document.body.insertAdjacentHTML('beforeend','<p>Invalid email or password</p>'); } return false; }
+</script></body></html>

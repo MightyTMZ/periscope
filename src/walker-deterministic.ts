@@ -36,6 +36,12 @@ export interface DeterministicWalkerConfig {
    * human handoff when the form was not filled or the wall stays.
    */
   autoLogin?: boolean;
+  /**
+   * A login the person typed into the console, held in memory for this job only. Used when Steel's vault injection
+   * does not fit the form (two-step email-then-password pages, forms without a visible password field at first).
+   * Never written to the sink, never stored, never shown to the model.
+   */
+  typedLogin?: { username: string; password: string };
   /** Reveal strategies to run on every screen (expandable rows, selects, modals). Default: none, links only. */
   revealOnScreens?: StrategyName[];
 }
@@ -145,6 +151,61 @@ export async function tryAutoLogin(page: Page): Promise<{ ok: boolean; reason: s
   return { ok: true, reason: boxSeen ? "credentials injected by Steel, anti-bot box verified in the browser, form submitted" : "credentials injected by Steel, form submitted" };
 }
 
+/** Tick a self-hosted anti-bot box (ALTCHA and friends) if one is on the form. */
+async function verifyAntiBot(page: Page): Promise<{ boxSeen: boolean; ok: boolean }> {
+  const box = page.locator("altcha-widget input[type=checkbox], #altcha-placeholder input[type=checkbox], input[type=checkbox][name*=captcha i], input[type=checkbox][id*=altcha i]").first();
+  if (!(await box.count())) return { boxSeen: false, ok: true };
+  await page.waitForTimeout(1500);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await box.click({ timeout: 3000, force: true }).catch(() => undefined);
+    for (let i = 0; i < 30; i++) {
+      const verified = await page.evaluate(() => {
+        const token = document.querySelector("input[name=altcha]") as HTMLInputElement | null;
+        const state = document.querySelector("div.altcha")?.getAttribute("data-state") ?? document.querySelector("altcha-widget")?.getAttribute("data-state");
+        return Boolean(token?.value) || state === "verified";
+      }).catch(() => false);
+      if (verified) return { boxSeen: true, ok: true };
+      await page.waitForTimeout(500);
+    }
+  }
+  return { boxSeen: true, ok: false };
+}
+
+/**
+ * Type a login the person provided. Handles the common shapes: email and password on one form, or email first with the
+ * password field appearing after "Continue". Anything else (a one-time code, a magic link, a social-only login) is
+ * left to the person in the live view.
+ */
+export async function tryTypedLogin(page: Page, login: { username: string; password: string }): Promise<{ ok: boolean; reason: string }> {
+  const user = page.locator("input[type=email], input[autocomplete=username], input[autocomplete=email], input[name*=email i], input[id*=email i], input[name*=user i], input[id*=user i], input[name*=login i], form input[type=text]").first();
+  try { await user.waitFor({ state: "visible", timeout: 6000 }); } catch { return { ok: false, reason: "no email or username field on the sign-in page" }; }
+  await user.click({ timeout: 3000 }).catch(() => undefined);
+  await user.fill(login.username, { timeout: 3000 }).catch(() => undefined);
+  let pw = page.locator("input[type=password]").first();
+  if (!(await pw.isVisible().catch(() => false))) {
+    // two-step form: email, then Continue, then the password field appears
+    const next = page.locator("form button[type=submit], form input[type=submit], button:has-text(\"Continue\"), button:has-text(\"Next\"), button:has-text(\"Log in\"), button:has-text(\"Sign in\")").first();
+    if (await next.count()) await next.click({ timeout: 3000 }).catch(() => undefined); else await user.press("Enter").catch(() => undefined);
+    pw = page.locator("input[type=password]").first();
+    try { await pw.waitFor({ state: "visible", timeout: 8000 }); } catch { return { ok: false, reason: "no password field appeared; this site may use a one-time code, a magic link, or a social login" }; }
+  }
+  await pw.click({ timeout: 3000 }).catch(() => undefined);
+  await pw.fill(login.password, { timeout: 3000 }).catch(() => undefined);
+  const bot = await verifyAntiBot(page);
+  if (!bot.ok) return { ok: false, reason: "the anti-bot box did not verify in the browser" };
+  const submit = page.locator("form button[type=submit], form input[type=submit], button:has-text(\"Log in\"), button:has-text(\"Sign in\"), button:has-text(\"Continue\")").first();
+  const before = page.url();
+  if (await submit.count()) await submit.click({ timeout: 3000 }).catch(() => undefined); else await pw.press("Enter").catch(() => undefined);
+  await page.waitForURL((u) => u.toString() !== before, { timeout: 20_000 }).catch(() => undefined);
+  await page.waitForLoadState("load", { timeout: 15_000 }).catch(() => undefined);
+  await page.waitForTimeout(1000);
+  if (await page.locator("input[type=password]").first().isVisible().catch(() => false)) {
+    const err = (await page.locator("body").innerText().catch(() => "")).match(/invalid|incorrect|wrong password|try again|not found|verification code|one-time|2fa|two-factor/i)?.[0];
+    return { ok: false, reason: err ? `the site answered "${err}"` : "the sign-in form is still on screen after submit" };
+  }
+  return { ok: true, reason: bot.boxSeen ? "login typed by Periscope, anti-bot box verified, form submitted" : "login typed by Periscope, form submitted" };
+}
+
 export async function walkDeterministic(cfg: DeterministicWalkerConfig): Promise<WalkerResult> {
   const page = cfg.page;
   const maxScreens = cfg.maxScreens ?? 40;
@@ -202,8 +263,12 @@ export async function walkDeterministic(cfg: DeterministicWalkerConfig): Promise
     if (!onSite(canonical(page.url()), root)) continue; // redirected off-site
 
     let wall = await wallOn(page, cfg, generation);
-    if (wall && wall.wall === "login" && cfg.autoLogin) {
-      const attempt = await tryAutoLogin(page);
+    if (wall && wall.wall === "login" && (cfg.autoLogin || cfg.typedLogin)) {
+      let attempt = cfg.autoLogin ? await tryAutoLogin(page) : { ok: false, reason: "no vault credential for this job" };
+      if (!attempt.ok && cfg.typedLogin) {
+        const typed = await tryTypedLogin(page, cfg.typedLogin);
+        attempt = typed.ok ? typed : { ok: false, reason: `${attempt.reason}; then typed login: ${typed.reason}` };
+      }
       if (attempt.ok) {
         wall = await wallOn(page, cfg, generation);
         if (!wall) {

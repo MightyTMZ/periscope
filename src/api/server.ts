@@ -253,7 +253,7 @@ export function createApi(opts: ApiOptions): Promise<Api> {
     saveProfile({ profileId: `pending:${namespace}`, competitor: job.competitor, accountRef, homeCountry: null, signedInIndicator: "", createdAt: new Date().toISOString(), ready: false, credentialNamespace: namespace, loginOrigin: origin });
     await opts.segment.abandon(c.params.id, "login details provided; restarting with Steel credential injection");
     pending.delete(c.params.id);
-    handle.enqueue([{ type: "walker", competitor: job.competitor, urls: [live?.currentUrl || job.urls[0]], vantage: { country: null, device: "desktop", authenticated: true }, accountRef, revealEverything: true }]);
+    handle.enqueue([{ type: "walker", competitor: job.competitor, urls: [live?.currentUrl || job.urls[0]], vantage: { country: null, device: "desktop", authenticated: true }, accountRef, revealEverything: true, typedLogin: { username, password } }]);
     json(c.res, 200, { ok: true, runId: jobRow.runId, origin, accountRef, note: "A fresh browser is opening the sign-in page; Steel injects the login; the walk continues behind it." });
   });
   route("POST", "/jobs/:id/takeover", (c) => {
