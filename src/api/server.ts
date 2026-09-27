@@ -155,7 +155,8 @@ export function createApi(opts: ApiOptions): Promise<Api> {
     const spec: RunSpec = {
       runId: String(b.runId ?? `run-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`), competitor: String(b.competitor), url: String(b.url),
       pages: b.pages as string[] | undefined, jobs: b.jobs as RunSpec["jobs"], countries: b.countries as string[] | undefined,
-      maxPages: b.maxPages === undefined ? undefined : Math.max(1, Math.min(1000, Number(b.maxPages))),
+      // PERISCOPE_MAX_PAGES_CAP: a hard ceiling for whole-site runs on this brain (demo week on a small disk: 40)
+      maxPages: Math.max(1, Math.min(Number(process.env.PERISCOPE_MAX_PAGES_CAP ?? 1000), b.maxPages === undefined ? 400 : Number(b.maxPages))),
       login: b.login === "ask" ? "ask" : undefined,
       capUsd: b.capUsd === undefined ? undefined : Number(b.capUsd), start: b.start as string | undefined, profileId: b.profileId as string | undefined,
       accountRef: b.accountRef as string | undefined, category: b.category as string | undefined, goal: b.goal as string | undefined,
