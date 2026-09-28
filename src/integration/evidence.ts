@@ -9,12 +9,17 @@ export const evidenceRoot = () => path.resolve(process.env.PERISCOPE_DATA_DIR ??
 /** Persist screenshot blobs and their observation links before emitting the observation. */
 export function evidenceSink(storage: Storage, sink: EventSink): EventSink {
   const artifacts = new ArtifactStore({ storage, root: evidenceRoot() });
+  // A second copy of every screenshot in the artifact store doubled disk use and filled the volume. The screenshot
+  // already lives under /screenshots with its path on the observation, so archive the blob only when explicitly asked.
+  const archiveShots = process.env.PERISCOPE_ARCHIVE_SCREENSHOTS === "1";
   return { async write(event: Event) {
-    if (event.type === "observation" && event.data.screenshotPath) {
-      const ref = await artifacts.putBytes(await readFile(event.data.screenshotPath), { runId: event.data.runId, kind: "screenshot", mediaType: "image/png" });
-      await sink.write(event);
-      storage.linkArtifact(event.data.id, ref.id);
-      return;
+    if (archiveShots && event.type === "observation" && event.data.screenshotPath) {
+      try {
+        const ref = await artifacts.putBytes(await readFile(event.data.screenshotPath), { runId: event.data.runId, kind: "screenshot", mediaType: "image/png" });
+        await sink.write(event);
+        storage.linkArtifact(event.data.id, ref.id);
+        return;
+      } catch { /* fall through to a plain write */ }
     }
     await sink.write(event);
   } };
